@@ -1,6 +1,6 @@
-# Glory 🛡️
+# Glory
 
-**Glory** is a decentralized, cryptographically secured peer-to-peer (P2P) communication and network orchestration utility engineered in Go. It implements mutual Ed25519 identity verification, challenge-response handshakes, local subnet discovery, and centralized directory coordination to facilitate robust, zero-trust node connectivity across disparate networks.
+**Glory** is a decentralized, cryptographically secured peer-to-peer (P2P) communication and network orchestration utility engineered in Go by **@kleophonx**. It implements mutual Ed25519 identity verification, challenge-response handshakes, local subnet discovery, centralized directory coordination, and strict access control lists (public/private node modes with friends-list authorization) to facilitate zero-trust node connectivity.
 
 ---
 
@@ -18,7 +18,7 @@
 |            |       (Mutual Authentication)        |             |
 |            v                                      v             |
 |   +--------------------------------------------------+          |
-|   |               Oracle Cloud Hub Server            |          |
+|   |             Oracle Cloud Hub Server              |          |
 |   |        (Directory Registration & Discovery)      |          |
 |   +--------------------------------------------------+          |
 +-----------------------------------------------------------------+
@@ -27,17 +27,19 @@
 ### Core Subsystems
 
 1. **Cryptographic Identity (`pkg/crypto`)**:
-   - Automatically provisions and maintains persistent Ed25519 asymmetric keypairs stored with strict POSIX permissions (`0600`) within the operating system's configuration directory.
-2. **Secure Handshake Protocol (`pkg/p2p`)**:
+   - Automatically provisions and maintains persistent Ed25519 asymmetric keypairs stored with strict POSIX permissions (`0600`) within the operating system's configuration directory (`~/.config/glory/key`).
+2. **Configuration & Access Control (`pkg/config`)**:
+   - Manages JSON-formatted configuration (`~/.config/glory/config.json`) defining node visibility (`public` or `private`) and pre-approved friends lists for zero-trust authorization.
+3. **Secure Handshake Protocol (`pkg/p2p`)**:
    - Enforces mutual authentication on every TCP socket connection. Peers exchange public keys and random 32-byte nonces, signing challenges under a domain-separated context (`glory-handshake-v1`) to mitigate Man-in-the-Middle (MitM) vectors.
-3. **Subnet Discovery (`pkg/p2p/discovery.go`)**:
+4. **Subnet Discovery (`pkg/p2p/discovery.go`)**:
    - Utilizes UDP broadcast mechanisms to dynamically discover active peer nodes inhabiting the same local broadcast domain.
-4. **Directory Orchestration Hub (`pkg/p2p/hub.go`)**:
+5. **Directory Orchestration Hub (`pkg/p2p/hub.go`)**:
    - Provides a centralized coordination daemon designed for cloud deployment (e.g., Oracle Cloud infrastructure), allowing distributed nodes to register their presence and query global peer topologies.
 
 ---
 
-## Installation
+## Installation & Testing
 
 Ensure you have **Go 1.22+** installed on your system.
 
@@ -45,6 +47,39 @@ Ensure you have **Go 1.22+** installed on your system.
 git clone https://github.com/Kleophon/Glory.git
 cd Glory
 go build -o glory main.go
+```
+
+### Running Test Suite
+Glory includes comprehensive unit tests covering cryptographic identity generation, TCP handshake protocols, and directory hub registration:
+```bash
+go test -v ./...
+```
+
+---
+
+## Configuration & Access Control
+
+Glory supports a JSON configuration file located at `~/.config/glory/config.json`. You can manage visibility and authorized friends using the `glory config` command:
+
+### 1. Set Node Visibility
+- **Public Mode** (default): Any peer can connect to your node.
+  ```bash
+  glory config -visibility public
+  ```
+- **Private Mode**: Incoming connections are strictly rejected unless the connecting peer's Ed25519 public key is explicitly registered in your friends list.
+  ```bash
+  glory config -visibility private
+  ```
+
+### 2. Manage Friends List
+Add a trusted peer's 64-character Ed25519 public key hex to your authorized friends list:
+```bash
+glory config -add-friend <peer-public-key-hex>
+```
+
+View current configuration settings:
+```bash
+glory config
 ```
 
 ---
@@ -57,43 +92,52 @@ Display your node's Ed25519 public key identifier:
 ./glory key
 ```
 
-### 2. Local Subnet Peer Discovery
+### 2. Connecting Local Peers
+#### Step A: Discover Local Peers
 Scan the local broadcast domain for active peers:
 ```bash
 ./glory scan
 ```
+#### Step B: Start Listener & Connect
+On Peer 1 (Receiver):
+```bash
+./glory start -port 4242
+```
+On Peer 2 (Initiator):
+```bash
+./glory connect <peer1-ip>:4242 [peer1-public-key-hex]
+```
 
-### 3. Deploying the Central Directory Hub (Oracle Cloud / VPS)
-On your cloud server (e.g., Oracle Cloud instance), initiate the directory coordinator daemon:
+### 3. Connecting Peers Across the World via Central Hub (Oracle Cloud)
+#### Step A: Deploy Hub on Oracle Cloud Server
+On your remote VPS/Oracle server instance:
 ```bash
 ./glory server -port 4244
 ```
-
-### 4. Initiating a Node Registered with the Hub
-Start a peer node and register its availability with the central directory hub:
+#### Step B: Start Nodes and Register with Hub
+On Peer nodes worldwide:
 ```bash
 ./glory start -port 4242 -hub <oracle-server-ip>:4244
 ```
-
-### 5. Querying Global Active Peers
-Retrieve a JSON-formatted manifest of all active nodes registered across the global topology:
+#### Step C: List All Active Global Peers
+Query the central hub to view online peers worldwide:
 ```bash
 ./glory list <oracle-server-ip>:4244
 ```
-
-### 6. Establishing Direct Peer-to-Peer Connection
-Connect securely to a remote peer (with optional public key pinning):
+#### Step D: Connect to a Global Peer
 ```bash
-./glory connect <remote-ip>:4242 [expected-peer-public-key-hex]
+./glory connect <global-peer-ip>:<port> <global-peer-public-key-hex>
 ```
 
 ---
 
-## Security Specifications
+## Structured Logging
 
-- **Asymmetric Signatures**: Ed25519 elliptic curve signatures guarantee non-repudiation and socket authenticity.
-- **Key Pinning**: Optional argument verification (`[peer-key]`) ensures zero-trust validation against rogue endpoints.
-- **Timed Timeouts**: Strict deadline enforcement on TCP handshakes prevents socket exhaustion and slow-loris vectors.
+Glory provides timestamped, color-coded, structured operational logs across all subsystems:
+- `[INFO]`: General operational state updates.
+- `[SUCCESS]`: Successful cryptographic verification, connection establishment, or config updates.
+- `[WARN]`: Access control rejections, network warnings, or retry backoffs.
+- `[ERROR]`: Fatal failures, bind errors, or handshake rejections.
 
 ---
 

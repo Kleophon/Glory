@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"glory/pkg/config"
 	"glory/pkg/crypto"
 	"glory/pkg/p2p"
 	"net"
@@ -15,10 +16,26 @@ import (
 )
 
 const (
-	Version     = "0.4.0"
+	Version     = "0.5.0"
 	DefaultPort = "4242"
 	Author      = "@kleophonx"
 )
+
+func logInfo(format string, args ...any) {
+	fmt.Printf("[%s] [INFO] "+format+"\n", append([]any{time.Now().Format("15:04:05")}, args...)...)
+}
+
+func logSuccess(format string, args ...any) {
+	fmt.Printf("[%s] [SUCCESS] "+format+"\n", append([]any{time.Now().Format("15:04:05")}, args...)...)
+}
+
+func logWarn(format string, args ...any) {
+	fmt.Printf("[%s] [WARN] "+format+"\n", append([]any{time.Now().Format("15:04:05")}, args...)...)
+}
+
+func logError(format string, args ...any) {
+	fmt.Fprintf(os.Stderr, "[%s] [ERROR] "+format+"\n", append([]any{time.Now().Format("15:04:05")}, args...)...)
+}
 
 func Run() {
 	if len(os.Args) < 2 {
@@ -29,8 +46,8 @@ func Run() {
 	cmd := os.Args[1]
 	switch cmd {
 	case "-v", "--version", "version":
-		fmt.Printf("glory v%s (Secure P2P Peer Network)\n", Version)
-		fmt.Printf("Author: %s\n", Author)
+		logInfo("glory v%s (Secure P2P Peer Network)", Version)
+		logInfo("Author: %s", Author)
 		return
 	case "-h", "--help", "help":
 		PrintUsage()
@@ -39,13 +56,19 @@ func Run() {
 
 	priv, err := crypto.LoadKey()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "Error loading/generating identity key:", err)
+		logError("Failed to load/generate identity key: %v", err)
 		os.Exit(1)
+	}
+
+	cfg, err := config.LoadConfig()
+	if err != nil {
+		logWarn("Could not load configuration file, using defaults: %v", err)
+		cfg = config.DefaultConfig()
 	}
 
 	switch cmd {
 	case "start":
-		err = cmdStart(priv, os.Args[2:])
+		err = cmdStart(priv, cfg, os.Args[2:])
 	case "connect":
 		err = cmdConnect(priv, os.Args[2:])
 	case "scan":
@@ -54,35 +77,33 @@ func Run() {
 		err = cmdServer(os.Args[2:])
 	case "list":
 		err = cmdList(os.Args[2:])
+	case "config":
+		err = cmdConfig(cfg, os.Args[2:])
 	case "key":
-		fmt.Printf("Public Key: %s\n", hex.EncodeToString(priv.Public().(ed25519.PublicKey)))
+		logInfo("Public Key: %s", hex.EncodeToString(priv.Public().(ed25519.PublicKey)))
 		return
 	default:
-		fmt.Fprintf(os.Stderr, "Unknown command: %s\n\n", cmd)
+		logError("Unknown command: %s", cmd)
 		PrintUsage()
 		os.Exit(1)
 	}
 
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "Error:", err)
+		logError("%v", err)
 		os.Exit(1)
 	}
 }
 
-func cmdStart(priv ed25519.PrivateKey, args []string) error {
+func cmdStart(priv ed25519.PrivateKey, cfg *config.Config, args []string) error {
 	fs := flag.NewFlagSet("start", flag.ExitOnError)
 	port := fs.String("port", DefaultPort, "Port to listen on for incoming peer connections")
-	hubAddr := fs.String("hub", "", "Optional Oracle server hub address to register this peer with")
+	hubAddr := fs.String("hub", "", "Optional central hub address to register this peer with")
 
 	fs.Usage = func() {
-		fmt.Printf("Glory v%s - Start Command\n", Version)
-		fmt.Printf("Author: %s\n\n", Author)
-		fmt.Println("Usage:")
-		fmt.Println("  glory start [options]")
-		fmt.Println("\nDescription:")
-		fmt.Println("  Starts a secure P2P node and waits for incoming connections.")
-		fmt.Println("  Performs cryptographic Ed25519 mutual authentication on every connection.")
-		fmt.Println("  Optionally registers with your Oracle server hub so others can discover your node.")
+		logInfo("Glory v%s - Start Command (Author: %s)", Version, Author)
+		fmt.Println("Usage: glory start [options]")
+		fmt.Println("\nOptions:")
+		fs.PrintDefaults()
 	}
 	fs.Parse(args)
 
@@ -94,44 +115,57 @@ func cmdStart(priv ed25519.PrivateKey, args []string) error {
 
 	pubHex := hex.EncodeToString(priv.Public().(ed25519.PublicKey))
 
-	fmt.Println("==================================================")
-	fmt.Printf("  Glory P2P Node Started (v%s)\n", Version)
-	fmt.Printf("  Author: %s\n", Author)
-	fmt.Println("==================================================")
-	fmt.Printf("Your Identity Key : %s\n", pubHex)
-	fmt.Printf("Listening Address : 0.0.0.0:%s\n", *port)
+	logInfo("==================================================")
+	logInfo("  Glory P2P Node Initialized (v%s)", Version)
+	logInfo("  Author: %s", Author)
+	logInfo("==================================================")
+	logInfo("Local Identity Public Key : %s", pubHex)
+	logInfo("Node Visibility Mode      : %s", strings.ToUpper(cfg.Visibility))
+	if cfg.Visibility == "private" {
+		logInfo("Authorized Friends Count  : %d", len(cfg.Friends))
+	}
+	logInfo("Listening Address         : 0.0.0.0:%s", *port)
 	if *hubAddr != "" {
-		fmt.Printf("Hub Registry      : %s (Registering...)\n", *hubAddr)
+		logInfo("Hub Registry Target       : %s", *hubAddr)
 		go registerWithHub(*hubAddr, pubHex, *port)
 	}
-	fmt.Println("--------------------------------------------------")
-	fmt.Println("Waiting for incoming peer connections...")
-	fmt.Println("==================================================")
+	logInfo("--------------------------------------------------")
+	logInfo("Awaiting incoming peer connections...")
+	logInfo("==================================================")
 
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "Accept error:", err)
+			logError("Socket accept error: %v", err)
 			continue
 		}
 
 		remoteAddr := conn.RemoteAddr().String()
-		fmt.Printf("\n[+] Incoming connection from %s\n", remoteAddr)
+		logInfo("Incoming TCP connection established from %s", remoteAddr)
 
 		peerPub, err := p2p.Handshake(conn, priv)
 		if err != nil {
-			fmt.Printf("[-] Handshake failed with %s: %v\n", remoteAddr, err)
+			logError("Handshake failed with %s: %v", remoteAddr, err)
 			conn.Close()
 			continue
 		}
 
 		peerHex := hex.EncodeToString(peerPub)
-		fmt.Printf("[✓] Handshake successful!\n")
-		fmt.Printf("[✓] Peer Public Key: %s\n", peerHex)
-		fmt.Println("--------------------------------------------------")
+
+		// Check access control (private vs public & friends list)
+		if !cfg.IsAllowed(peerHex) {
+			logWarn("Access denied for peer %s (Key: %s). Node visibility is PRIVATE and key is not in friends list.", remoteAddr, peerHex)
+			conn.Write([]byte("ERROR: Access denied. Node is private.\n"))
+			conn.Close()
+			continue
+		}
+
+		logSuccess("Handshake completed successfully with %s", remoteAddr)
+		logSuccess("Verified Peer Public Key: %s", peerHex)
+		logInfo("--------------------------------------------------")
 
 		p2p.Chat(conn)
-		fmt.Println("\n[*] Resuming listener, waiting for new connections...")
+		logInfo("Connection closed. Resuming listener...")
 	}
 }
 
@@ -140,11 +174,13 @@ func registerWithHub(hubAddr, pubKey, port string) {
 	defer ticker.Stop()
 
 	for range ticker.C {
-		// Simple HTTP or TCP ping to hub (or tcp dial)
 		conn, err := net.DialTimeout("tcp", hubAddr, 5*time.Second)
 		if err == nil {
-			fmt.Fprintf(conn, "REGISTER %s %s\n", pubKey, port)
+			_, _ = fmt.Fprintf(conn, "REGISTER %s %s\n", pubKey, port)
 			conn.Close()
+			logInfo("Successfully pinged central hub registry at %s", hubAddr)
+		} else {
+			logWarn("Failed to contact central hub at %s: %v", hubAddr, err)
 		}
 	}
 }
@@ -152,12 +188,8 @@ func registerWithHub(hubAddr, pubKey, port string) {
 func cmdConnect(priv ed25519.PrivateKey, args []string) error {
 	fs := flag.NewFlagSet("connect", flag.ExitOnError)
 	fs.Usage = func() {
-		fmt.Printf("Glory v%s - Connect Command\n", Version)
-		fmt.Printf("Author: %s\n\n", Author)
-		fmt.Println("Usage:")
-		fmt.Println("  glory connect <ip[:port]> [peer-key]")
-		fmt.Println("\nDescription:")
-		fmt.Println("  Connects securely to a remote Glory peer over TCP with Ed25519 authentication.")
+		logInfo("Glory v%s - Connect Command (Author: %s)", Version, Author)
+		fmt.Println("Usage: glory connect <ip[:port]> [peer-key]")
 	}
 	fs.Parse(args)
 
@@ -178,13 +210,13 @@ func cmdConnect(priv ed25519.PrivateKey, args []string) error {
 		addr = net.JoinHostPort(addr, DefaultPort)
 	}
 
-	fmt.Printf("[*] Connecting to peer at %s...\n", addr)
+	logInfo("Initiating TCP connection to remote endpoint %s...", addr)
 	conn, err := net.DialTimeout("tcp", addr, 10*time.Second)
 	if err != nil {
 		return fmt.Errorf("failed to connect to %s: %w", addr, err)
 	}
 
-	fmt.Println("[*] Performing cryptographic handshake...")
+	logInfo("Executing cryptographic Ed25519 handshake...")
 	peerPub, err := p2p.Handshake(conn, priv)
 	if err != nil {
 		conn.Close()
@@ -198,17 +230,14 @@ func cmdConnect(priv ed25519.PrivateKey, args []string) error {
 		return fmt.Errorf("security alert: key mismatch! Expected %s, got %s", expectedKey, gotKey)
 	}
 
-	fmt.Println("==================================================")
-	fmt.Printf("  Connected Successfully to %s\n", addr)
-	fmt.Printf("  Author: %s\n", Author)
-	fmt.Println("==================================================")
-	fmt.Printf("Peer Public Key : %s\n", gotKey)
+	logSuccess("Connected successfully to remote endpoint %s", addr)
+	logSuccess("Verified Peer Public Key: %s", gotKey)
 	if expectedKey != "" {
-		fmt.Println("Key Verification: Verified & Trusted [✓]")
+		logSuccess("Key Pinning Verification Passed [✓]")
 	}
-	fmt.Println("--------------------------------------------------")
-	fmt.Println("Type your messages below. Press Ctrl+C to exit.")
-	fmt.Println("==================================================")
+	logInfo("--------------------------------------------------")
+	logInfo("Interactive session active. Type messages below.")
+	logInfo("==================================================")
 
 	p2p.Chat(conn)
 	return nil
@@ -216,24 +245,24 @@ func cmdConnect(priv ed25519.PrivateKey, args []string) error {
 
 func cmdScan(priv ed25519.PrivateKey) error {
 	pubHex := hex.EncodeToString(priv.Public().(ed25519.PublicKey))
-	fmt.Printf("[*] Scanning local network for Glory peers (Author: %s)...\n", Author)
+	logInfo("Initiating local subnet broadcast scan...")
 	peers := p2p.ScanLocalNetwork(pubHex)
 
 	if len(peers) == 0 {
-		fmt.Println("[-] No peers found on local network.")
+		logWarn("No active Glory peers discovered on local subnet.")
 		return nil
 	}
 
-	fmt.Println("\n[+] Discovered Peers on Local Network:")
+	logSuccess("Discovered %d active peer(s) on local subnet:", len(peers))
 	for _, p := range peers {
-		fmt.Printf("  -> %s\n", p)
+		logInfo("  -> %s", p)
 	}
 	return nil
 }
 
 func cmdServer(args []string) error {
 	fs := flag.NewFlagSet("server", flag.ExitOnError)
-	port := fs.String("port", "4244", "Port for the central hub registry server")
+	port := fs.String("port", "4244", "Port for the central directory hub server")
 	fs.Parse(args)
 
 	hub := p2p.NewPeerHub()
@@ -243,11 +272,11 @@ func cmdServer(args []string) error {
 	}
 	defer ln.Close()
 
-	fmt.Printf("==================================================\n")
-	fmt.Printf("  Glory Central Hub Server (v%s)\n", Version)
-	fmt.Printf("  Author: %s\n", Author)
-	fmt.Printf("==================================================\n")
-	fmt.Printf("Hub Server listening on port %s...\n", *port)
+	logInfo("==================================================")
+	logInfo("  Glory Central Hub Coordinator Daemon (v%s)", Version)
+	logInfo("  Author: %s", Author)
+	logInfo("==================================================")
+	logSuccess("Hub daemon active and listening on port %s...", *port)
 
 	for {
 		conn, err := ln.Accept()
@@ -264,8 +293,10 @@ func cmdServer(args []string) error {
 				pubKey := parts[1]
 				ip, _, _ := net.SplitHostPort(c.RemoteAddr().String())
 				hub.Register(ip, pubKey)
+				logInfo("Hub registered node %s from IP %s", pubKey[:12], ip)
 			} else if strings.HasPrefix(line, "LIST") {
 				_, _ = c.Write(hub.ToJSON())
+				logInfo("Hub served peer list to client %s", c.RemoteAddr().String())
 			}
 		}(conn)
 	}
@@ -280,6 +311,7 @@ func cmdList(args []string) error {
 		hubAddr = net.JoinHostPort(hubAddr, "4244")
 	}
 
+	logInfo("Fetching active peer directory from hub %s...", hubAddr)
 	conn, err := net.DialTimeout("tcp", hubAddr, 5*time.Second)
 	if err != nil {
 		return fmt.Errorf("failed to connect to hub: %w", err)
@@ -289,15 +321,57 @@ func cmdList(args []string) error {
 	_, _ = fmt.Fprintln(conn, "LIST")
 	buf := make([]byte, 4096)
 	n, _ := conn.Read(buf)
-	fmt.Println("=== Active Global Peers Registered on Hub ===")
+	logSuccess("=== Active Global Peer Registry ===")
 	fmt.Println(string(buf[:n]))
 	return nil
 }
 
-func PrintUsage() {
-	fmt.Printf(`Glory v%s - Secure Peer-to-Peer Network CLI
-Author: %s
+func cmdConfig(cfg *config.Config, args []string) error {
+	fs := flag.NewFlagSet("config", flag.ExitOnError)
+	visibility := fs.String("visibility", "", "Set node visibility ('public' or 'private')")
+	addFriend := fs.String("add-friend", "", "Add a peer public key hex to the friends list")
+	fs.Parse(args)
 
+	modified := false
+	if *visibility != "" {
+		v := strings.ToLower(*visibility)
+		if v != "public" && v != "private" {
+			return errors.New("visibility must be either 'public' or 'private'")
+		}
+		cfg.Visibility = v
+		modified = true
+		logSuccess("Node visibility updated to: %s", v)
+	}
+
+	if *addFriend != "" {
+		keyHex := strings.TrimSpace(*addFriend)
+		if len(keyHex) != 64 {
+			logWarn("Warning: public key length is not 64 hex characters (Ed25519 expected length)")
+		}
+		cfg.Friends = append(cfg.Friends, keyHex)
+		modified = true
+		logSuccess("Added public key to friends list: %s", keyHex)
+	}
+
+	if modified {
+		if err := cfg.Save(); err != nil {
+			return fmt.Errorf("failed to save configuration: %w", err)
+		}
+		logSuccess("Configuration successfully persisted to disk.")
+	} else {
+		logInfo("Current Configuration:")
+		logInfo("  Visibility : %s", cfg.Visibility)
+		logInfo("  Friends    : %d registered", len(cfg.Friends))
+		for i, f := range cfg.Friends {
+			logInfo("    [%d] %s", i+1, f)
+		}
+	}
+	return nil
+}
+
+func PrintUsage() {
+	logInfo("Glory v%s - Secure Peer-to-Peer Network CLI (Author: %s)", Version, Author)
+	fmt.Printf(`
 Usage:
   glory <command> [arguments]
 
@@ -305,12 +379,13 @@ Commands:
   start           Start a P2P node and wait for connections (supports -hub <server>)
   connect         Connect securely to a remote peer IP
   scan            Search and discover active Glory peers on your local network
-  server          Start a central discovery hub server (ideal for Oracle cloud)
+  server          Start a central directory hub server (Oracle cloud deployment)
   list            List active online peers registered on a central hub server
+  config          Manage node configuration (visibility, friends list)
   key             Display your local Ed25519 identity public key
   version         Show current version number and author details
   help            Show this help message
 
 Use "glory <command> --help" for detailed flag options.
-`, Version, Author)
+`)
 }

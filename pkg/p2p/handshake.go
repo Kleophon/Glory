@@ -13,9 +13,8 @@ import (
 // Handshake swaps public keys and proves each side owns its key
 // by signing a random challenge chosen by the other side.
 func Handshake(conn net.Conn, priv ed25519.PrivateKey) (ed25519.PublicKey, error) {
-	if err := conn.SetDeadline(time.Now().Add(15 * time.Second)); err != nil {
-		return nil, err
-	}
+	// Ignore deadline error if connection type doesn't support deadlines (e.g. net.Pipe)
+	_ = conn.SetDeadline(time.Now().Add(15 * time.Second))
 	defer conn.SetDeadline(time.Time{})
 
 	pub := priv.Public().(ed25519.PublicKey)
