@@ -1,7 +1,10 @@
 package p2p
 
 import (
+	"crypto/ed25519"
+	"encoding/hex"
 	"fmt"
+	"glory/pkg/config"
 	"net"
 	"time"
 )
@@ -22,10 +25,8 @@ func ScanLocalNetwork(myPub string) []string {
 
 	l.SetDeadline(time.Now().Add(2 * time.Second))
 
-	// Broadcast beacon
 	broadcastAddr, err := net.ResolveUDPAddr("udp4", "255.255.255.255:"+DiscoveryPort)
 	if err != nil {
-		// Fallback to loopback/local if broadcast fails
 		return nil
 	}
 
@@ -47,4 +48,38 @@ func ScanLocalNetwork(myPub string) []string {
 	}
 
 	return foundPeers
+}
+
+// StartDiscoveryResponder listens for UDP discovery beacons and responds if authorized by config.
+func StartDiscoveryResponder(priv ed25519.PrivateKey, cfg *config.Config) {
+	addr, err := net.ResolveUDPAddr("udp4", ":"+DiscoveryPort)
+	if err != nil {
+		return
+	}
+
+	conn, err := net.ListenUDP("udp4", addr)
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+
+	pubHex := hex.EncodeToString(priv.Public().(ed25519.PublicKey))
+	buf := make([]byte, 1024)
+
+	for {
+		n, remoteAddr, err := conn.ReadFrom(buf)
+		if err != nil {
+			continue
+		}
+
+		msg := string(buf[:n])
+		if len(msg) > len(DiscoveryMsg) {
+			parts := msg[len(DiscoveryMsg)+1:]
+			// Check if querier is allowed (if private, must be a friend)
+			if cfg.IsAllowed(parts) {
+				response := []byte(fmt.Sprintf("%s:%s", DiscoveryMsg, pubHex))
+				_, _ = conn.WriteTo(response, remoteAddr)
+			}
+		}
+	}
 }

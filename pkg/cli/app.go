@@ -16,7 +16,7 @@ import (
 )
 
 const (
-	Version     = "0.5.0"
+	Version     = "0.6.0"
 	DefaultPort = "4242"
 	Author      = "@kleophonx"
 )
@@ -107,6 +107,9 @@ func cmdStart(priv ed25519.PrivateKey, cfg *config.Config, args []string) error 
 	}
 	fs.Parse(args)
 
+	// Start UDP discovery responder in background (private nodes only respond to friends)
+	go p2p.StartDiscoveryResponder(priv, cfg)
+
 	listener, err := net.Listen("tcp", ":"+*port)
 	if err != nil {
 		return fmt.Errorf("failed to bind to port %s: %w", *port, err)
@@ -123,11 +126,18 @@ func cmdStart(priv ed25519.PrivateKey, cfg *config.Config, args []string) error 
 	logInfo("Node Visibility Mode      : %s", strings.ToUpper(cfg.Visibility))
 	if cfg.Visibility == "private" {
 		logInfo("Authorized Friends Count  : %d", len(cfg.Friends))
+		logInfo("Stealth Mode Active       : Hidden from public subnet scans and hub directories.")
 	}
 	logInfo("Listening Address         : 0.0.0.0:%s", *port)
+
+	// Only public nodes register with central hub directories
 	if *hubAddr != "" {
-		logInfo("Hub Registry Target       : %s", *hubAddr)
-		go registerWithHub(*hubAddr, pubHex, *port)
+		if cfg.Visibility == "private" {
+			logWarn("Node visibility is PRIVATE. Refusing to register with central hub to preserve stealth status.")
+		} else {
+			logInfo("Hub Registry Target       : %s", *hubAddr)
+			go registerWithHub(*hubAddr, pubHex, *port)
+		}
 	}
 	logInfo("--------------------------------------------------")
 	logInfo("Awaiting incoming peer connections...")
@@ -152,10 +162,9 @@ func cmdStart(priv ed25519.PrivateKey, cfg *config.Config, args []string) error 
 
 		peerHex := hex.EncodeToString(peerPub)
 
-		// Check access control (private vs public & friends list)
 		if !cfg.IsAllowed(peerHex) {
 			logWarn("Access denied for peer %s (Key: %s). Node visibility is PRIVATE and key is not in friends list.", remoteAddr, peerHex)
-			conn.Write([]byte("ERROR: Access denied. Node is private.\n"))
+			_, _ = conn.Write([]byte("ERROR: Access denied. Node is private.\n"))
 			conn.Close()
 			continue
 		}
@@ -379,7 +388,7 @@ Commands:
   start           Start a P2P node and wait for connections (supports -hub <server>)
   connect         Connect securely to a remote peer IP
   scan            Search and discover active Glory peers on your local network
-  server          Start a central directory hub server (Oracle cloud deployment)
+  server          Start a central directory hub server (any VPS/cloud server)
   list            List active online peers registered on a central hub server
   config          Manage node configuration (visibility, friends list)
   key             Display your local Ed25519 identity public key

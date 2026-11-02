@@ -18,7 +18,7 @@
 |            |       (Mutual Authentication)        |             |
 |            v                                      v             |
 |   +--------------------------------------------------+          |
-|   |             Oracle Cloud Hub Server              |          |
+|   |              Central Hub Server                  |          |
 |   |        (Directory Registration & Discovery)      |          |
 |   +--------------------------------------------------+          |
 +-----------------------------------------------------------------+
@@ -33,9 +33,9 @@
 3. **Secure Handshake Protocol (`pkg/p2p`)**:
    - Enforces mutual authentication on every TCP socket connection. Peers exchange public keys and random 32-byte nonces, signing challenges under a domain-separated context (`glory-handshake-v1`) to mitigate Man-in-the-Middle (MitM) vectors.
 4. **Subnet Discovery (`pkg/p2p/discovery.go`)**:
-   - Utilizes UDP broadcast mechanisms to dynamically discover active peer nodes inhabiting the same local broadcast domain.
+   - Utilizes UDP broadcast mechanisms to dynamically discover active peer nodes inhabiting the same local broadcast domain. **Private nodes operate in stealth mode**: they ignore discovery probes unless the querying peer is explicitly present in their authorized friends list.
 5. **Directory Orchestration Hub (`pkg/p2p/hub.go`)**:
-   - Provides a centralized coordination daemon designed for cloud deployment (e.g., Oracle Cloud infrastructure), allowing distributed nodes to register their presence and query global peer topologies.
+   - Provides a centralized coordination daemon designed for cloud deployment (e.g., any VPS or cloud server), allowing distributed nodes to register their presence and query global peer topologies. **Private nodes refuse to register with central hubs**, ensuring complete anonymity in global listings.
 
 ---
 
@@ -61,12 +61,12 @@ go test -v ./...
 
 Glory supports a JSON configuration file located at `~/.config/glory/config.json`. You can manage visibility and authorized friends using the `glory config` command:
 
-### 1. Set Node Visibility
-- **Public Mode** (default): Any peer can connect to your node.
+### 1. Set Node Visibility (`public` vs `private`)
+- **Public Mode** (default): Any peer can discover your node on the local network, register with central hubs, and connect.
   ```bash
   glory config -visibility public
   ```
-- **Private Mode**: Incoming connections are strictly rejected unless the connecting peer's Ed25519 public key is explicitly registered in your friends list.
+- **Private Mode (Stealth Mode)**: Your node becomes completely invisible to local subnet scans and refuses to register with central hubs. Incoming connections are strictly rejected unless the connecting peer's Ed25519 public key is explicitly registered in your friends list.
   ```bash
   glory config -visibility private
   ```
@@ -108,21 +108,21 @@ On Peer 2 (Initiator):
 ./glory connect <peer1-ip>:4242 [peer1-public-key-hex]
 ```
 
-### 3. Connecting Peers Across the World via Central Hub (Oracle Cloud)
-#### Step A: Deploy Hub on Oracle Cloud Server
-On your remote VPS/Oracle server instance:
+### 3. Connecting Peers Across the World via Central Hub (VPS / Cloud Server)
+#### Step A: Deploy Hub on a Remote Server
+On your cloud VPS instance:
 ```bash
 ./glory server -port 4244
 ```
-#### Step B: Start Nodes and Register with Hub
-On Peer nodes worldwide:
+#### Step B: Start Public Nodes and Register with Hub
+On Public Peer nodes worldwide:
 ```bash
-./glory start -port 4242 -hub <oracle-server-ip>:4244
+./glory start -port 4242 -hub <server-ip>:4244
 ```
 #### Step C: List All Active Global Peers
 Query the central hub to view online peers worldwide:
 ```bash
-./glory list <oracle-server-ip>:4244
+./glory list <server-ip>:4244
 ```
 #### Step D: Connect to a Global Peer
 ```bash
